@@ -1,0 +1,543 @@
+---
+title: "Clustering Countries"
+author: "Fib Gro"
+date: "`r format(Sys.Date(), '%B %e, %Y')`"
+output: 
+  rmdformats::downcute:
+    toc_depth: 4
+    toc_float: 
+        collapsed: True
+    highlight: tango
+    default_style: dark
+---
+
+# Introduction 
+
+```{r, echo=FALSE, fig.height=8}
+knitr::include_graphics("globe.png")
+```
+[Source of Picture](https://unsplash.com/photos/IoQioGLrz3Y)
+
+The project is part of the LBB of the unsupervised machine learning section. The data is related to HELP International organization. [HELP](https://help-international.org) is a non-profit organization that encourage people to fight poverty through sustainable and life-changing programs. The organization assists the volunteers to contribute and become social entrepreneurs so that they can enhance the life quality of in the most affected countries in the world. 
+
+Our objective in this project is to define how to use the financial resources effectively by categorizing the countries based on health and socio-economic factors that influence the overall development of the country. Thus, the HELP organization can deliver those resources to the country that need the most aid. In this project, we cluster countries by using the K-means clustering. The Principal Component Analysis (PCA) will be utilized for dimension reduction and anomaly detection.  
+
+# Dataset Information
+
+Dataset is collected from [the Kaggle website](https://www.kaggle.com/rohan0301/unsupervised-learning-on-country-data?select=data-dictionary.csv). The data contains 167 columns and 10 variables. The following is a description for each column:
+
+- country : name of the country
+- child_mort : death of children under 5 years of age per 1000 live births
+- exports : exports of goods and services per capita. Given as %age of the GDP per capita
+- health : total health spending per capita. Given as %age of GDP per capita
+- imports : imports of goods and services per capita. Given as %age of the GDP per capita
+- income : net income per person
+- inflation : the measurement of the annual growth rate of the Total GDP
+- life_expec : the average number of years a new born child would live if the current mortality patterns are to remain the same
+- total_fer : the number of children that would be born to each woman if the current age-fertility rates remain the same.
+- gdpp : the GDP per capita. Calculated as the Total GDP divided by the total population.
+
+# Data Preparation 
+
+## Load Libraries 
+
+Load all libraries used in this project. 
+
+```{r, warning=FALSE, message=FALSE}
+
+library(dplyr)
+library(GGally)
+library(tidyverse)
+library(tidyr)
+library(wesanderson)
+library(ggplot2)
+library(plotly)
+library(factoextra)
+library(FactoMineR)
+library(ggpubr)
+library(skimr)
+
+```
+
+## Read Dataset
+
+We read the dataset by using function `read.csv()` and assign it as a new object called `world`. 
+
+```{r}
+world <- read.csv("Country-data.csv")
+```
+
+## Observe Dataset
+
+We observe the dataset by using function `str()`. 
+
+- The dataframe contains 167 observations and 10 coloums. 
+- Nine variables are numeric and one variable is character. 
+
+```{r}
+str(world)
+```
+
+## Change Index Row  
+
+All variables are in the correct datatype, thus no requirement to change it. However, we will change the column `country` into `index row`.
+
+```{r}
+world <- data.frame(world[,-1], row.names = world[,1])
+```
+
+
+## Check missing value
+
+We check missing value by using function `colSums()` and `is.na()`. Based on the below table, there is no missing value in dataframe. 
+
+```{r}
+missing.value <- colSums(is.na(world))
+```
+
+```{r, echo=FALSE}
+rmarkdown::paged_table(as.data.frame(missing.value))
+```
+
+# Exploration Data
+
+## Overview Dataset
+
+We can observe the summary of our dataframe by using function `skim()`. 
+
+```{r}
+world %>% skim() %>% partition()
+```
+Now, let check the covariance. 
+
+```{r, echo=FALSE}
+# Observe the covariance/variance
+rmarkdown::paged_table(as.data.frame(cov(world)))
+```
+
+> Insight : 
+>
+- Variables have incomparable units (percentages, whole numbers and $ values). 
+- The range of variable values is quite different. For example, the gdpp and income have range between 10,000 and 125,000, while exports and imports have range between 41 and 200. Thus, the change of 50 in gdpp and income is insignificant, while in imports and exports is very significant. This finding influences their covariance value. As shown in the covariance table, for variables with a high range of values, the covariance will also be high. 
+- The data with a high scale difference could lead to a biased result. Thus, scaling the data is necessary before implementing PCA and K-means clustering.
+
+## Distribution Variables
+
+Let's check the distribution of the numeric variables by visualizing the boxplot for each variable. 
+
+```{r fig.height=8, fig.width=8, echo=FALSE, message=FALSE}
+
+# Transform the dataset into longer direction by using `pivot_longer()` and assign it as new dataframe called `world_long`
+world_long <- pivot_longer(data=world, cols = c(child_mort, exports, health, imports, income, inflation, life_expec, total_fer, gdpp ))
+
+world_long <- world_long %>% 
+  dplyr::select (name, value)
+
+# Create a boxplot from dataframe 'world_long'.
+world_long %>% 
+ggplot(aes(x = value, fill=name)) +
+  geom_boxplot(color="black")+
+  facet_wrap(~name, scales = "free", nrow=3)+
+  theme_bw()+
+  scale_fill_manual(values = wes_palette(10, name = "Darjeeling1", type = "continuous"))+
+  labs(title="Boxplot For Numeric Variables",
+       y="",
+       x="Values")+
+      theme_set(theme_minimal() + theme(text = element_text(family="Arial Narrow"))) +
+      theme(plot.title = element_text(size= 17, color = 'black'),
+            axis.title.x = element_text(size=12, color = 'black'),
+            axis.title.y = element_text(size = 12, color = 'black'),
+            panel.grid.major = element_blank(),
+            panel.grid.minor = element_blank(),
+            axis.line = element_line(colour = "black"),
+            legend.position = "")+
+    theme(strip.background =element_rect(fill="black"))+
+    theme(strip.text = element_text(colour = 'white', size=13))
+```
+
+> Insight : 
+>
+- We are dealing with an outlier in most numeric variables. We will keep the outlier in this dataset since most of the variables are informative to describe countries that are critical and in need of help. For instance, child mortality is a strong indicator of poverty, so the outlier here illustrates the countries with a high number of child mortality. 
+- Only life_expec has a left-skew distribution, while the other variables have a right-skew distribution.
+
+## Correlation 
+
+We can use function `ggcorr()` to visualize the correlation. 
+
+```{r, warning=FALSE}
+
+ggcorr(world, 
+       label = T, 
+       size = 3, hjust = 0.1, color='black', angle=90,
+       layout.exp = 3,
+       cex = 3,
+       low = "#FFC75F", high = '#D83121', mid = 'white')+
+labs(title = 'Correlation Matrix')+
+theme(plot.title = element_text(size=20),
+      legend.text = element_text(size = 12))
+```
+
+> Insight : 
+> 
+- gdpp and income, gdpp and life_expac, total_fer and child_mort, life_expec and income, income and exports, imports and exports have a positive strong relationship. 
+- gdpp and total_fer, gdpp and child_mort, total_fer and life_expec, total_fer and income, life_expec and child_mort, income and child_mort have a negative strong relationship. 
+- Since some variables have a strong correlation with others, the dataset is considered multicolinearity.  
+
+# Principal Component Analysis (PCA)
+
+Principal Component Analysis (PCA) is a method to reduce the dimensional of the large dataset, by transforming a large number of variables into a few variables, while preserving as much information as possible. The PCA can be used during pre-processing and exploration datasets before building the model. Furthermore, PCA can be utilized to detect anomaly or outliers. Detailed information on PCA can be found in this [link](https://www.sartorius.com/en/knowledge/science-snippets/what-is-principal-component-analysis-pca-and-how-it-is-used-507186). 
+
+## Scaling 
+
+The scaling is important before conducting PCA or clustering, especially using K-means. This is due to the standard Euclidean distance being utilized to calculate the distance in the K-means algorithm, which considers the normalized variables. The other reason is that we want to ensure all dimensions are equally treated. In another word, each column has a similar effect on the distance.
+
+We scale the variables by using a z-score. We use [z-score](https://developers.google.com/machine-learning/data-prep/transform/normalization#:~:text=Z%2Dscore%20is%20a%20variation,extreme%20that%20you%20need%20clipping.) to ensure the variable distributions have a mean zero (0) and standard deviation of 1. In other words, the z-score scaling represents the number of standard deviations away from the mean. The following is an equation for the z-score. 
+
+$$Z = \frac{x-mean}{sd}$$
+
+We can use `scale()` to normalize numeric variables in dataset and assign it as `world_scale()`. 
+
+```{r}
+# Z-score scaling 
+world_scale <- as.data.frame(scale(world))
+```
+
+```{r, echo=FALSE}
+# Observe the transformation 
+rmarkdown::paged_table(head(world_scale))
+```
+
+The output shows that the dataset has the similar scale. Thus, we can continue to the dimensional reduction processes. 
+
+## Dimension Reduction
+
+First, we need to define the index for numeric columns in dataframe `world`. Then, we use function `PCA()` from library `factoMiner` to implement PCA and assign it as a new object called `world_pca`. The eigenvalues and proportion of variances retained by each PC can be extracted by using function `world_pca$eig`. 
+
+```{r}
+world_pca <- PCA(X = world_scale, 
+                scale.unit = F, #Already scale scale
+                graph = FALSE, #No graph visualization
+                ncp = 9) #Number of numeric columns
+
+# Observe eigenvalues of PCA
+rmarkdown::paged_table(as.data.frame(world_pca$eig))
+```
+The sum of eigenvalues explained by all principal components is 8. The proportion of variation by each PC is given in the second row. For example, 4.11 divided by 8 equals 0.4595, or, about 45.95% of the variation is described by the first PC. The cumulative proportion is obtained by adding the successive percentage of variation. For example, PC 1 and PC2 describe 63.13% (45.95% + 17.18%) of the variation in the dataset.
+
+The eigenvalue in the first PC is larger compared to the subsequent PCs. That is, the first PC represents the directions with the maximum amount of variation in the data set. The eigenvalues can be utilized to define the number of PC to retain after PCA. Since there are no specific rules related to the appropriate eigenvalues, thus, we choose PC1 until PC5 which retain at least 90% of the information in the dataset. By doing this, we are able to reduce ~45% of the dimension from the original dataset while retaining ~95% of information from the data. 
+
+Now, let's create a dataframe containing only 5 PCs by using `world_pca$ind$coord[,1:5]`, and assign it as a new object called `world_keep`.
+
+```{r}
+world_keep <- world %>% 
+  dplyr::select(where(is.factor)) %>% 
+  cbind(world_pca$ind$coord[,1:5])
+```
+
+## Contribution Variables
+
+The contribution of variables for each principal component can be described by using function `fviz_contrib()`. The below code shows contribution plots for both PC1 and PC2.  
+
+```{r}
+# Contribution plot for PC1
+comp1 <- fviz_contrib(X=world_pca, choice ="var", axes=1, fill = "#DCAD70", color = "white", ggtheme = theme_grey())
+
+# Contribution plot for PC2
+comp2 <- fviz_contrib(X=world_pca, choice ="var", axes=2, fill = "#E7834F", color = "white", ggtheme = theme_grey())
+
+# Combine plot
+ggarrange(comp1, comp2)
+```
+
+The above plot shows the contribution variables for PC1 and PC2. The red line indicates the expected average contribution for each component. For each component, a variable with a contribution higher than this threshold is considered important in contributing to the PC. The plot indicates that the life_expec, child_mort, total_fer, gdpp, and income have the most contribution to the PC1. While imports and exports have the most contribution to the PC2. 
+
+Alternatively, we can observe the correlation between variables and each PC by using the function `dimdesc()`. Then, we use function `dim$Dim.1$quanti` to observe the correlation value for PC1. 
+
+```{r}
+# dimdisc: dimension description for world_pca
+dim <- dimdesc(world_pca)
+
+# Correlation variables with PC1
+rmarkdown::paged_table(as.data.frame(dim$Dim.1$quanti))
+```
+The above table shows that life_expec, income and gdpp have a high positive correlation value in PC1, while child_mort and total_fer have a high negative correlation in PC1. It is implied that those variables are the most important in describing the variability in the PC1.
+
+## Visualizing PCA
+
+The PCA can be visualized by using a variable factor map and an individual factor map or a combination of both maps, called [the biplot](https://www.geo.fu-berlin.de/en/v/soga/Geodata-analysis/Principal-Component-Analysis/principal-components-basics/Interpretation-and-visualization/index.html). **The variable plot** shows the variables as vectors (arrows). The vectors start at the origin [0,0] and extend to coordinates given by the loading vector. This plot illustrates the contribution of each variable to components and the correlation of each variable. The variable factor map can be generated by using the function `fviz_pca_var()`. 
+
+```{r}
+fviz_pca_var(world_pca,
+             col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             legend.title = list(color = "Contrib"))
+
+```
+
+> Insight from variables factor map :
+>
+- The more parallel the arrows (variables) to PC, the more those variables contribute to that PC. Thus, income, gdpp, and life_expec have a high positive contribution to PC1, while total_fer and child_mort have a negative contribution to PC1. On other hand, imports and exports have a high positive contribution to PC2. 
+- The longer the arrow, the more variability of this variable is represented by two PC (red arrows). 
+- Correlation between each variable can be defined by the angle between arrows. A high positive correlation is represented by small-angle differences as described in imports - exports, income - gdpp, and total_fer - child_mort. The perpendicular angle represents no correlation as shown in imports-life_expec and imports-health, while the opposite angle represents a high negative correlation as shown in life_expec - total_fer. 
+
+**The individual plot** illustrates the observations as points in the plane formed by two principal components. In this plot, we observe patterns, clusters, and outliers. We can use `plot.PCA()` to observe the individual plot including five outliers. 
+
+```{r}
+plot.PCA(x=world_pca,
+         choix="ind",
+         invisible="quali",
+         select="contrib 5", #  5 outliers
+         habillage = "exports") # Show based on variable exports
+```
+
+> Insight from individual factor map :
+>
+- Most of the observation is clustered near the origin point [0,0], implying that most variables are close to the mean of each variable. 
+- Observation in the same direction with the arrow and located far from the zero point has a high value in those arrow variables. We can call it an outlier. For example, Singapore, Malta and Luxembourg have a high value of exports, while Nigerial and Haiti has a low value of exports. However, combining with variable plot, we might conclude that Singapore, Malta and Luxembourg not only have a high value in exports, but also in imports. While, Nigeria and Haiti have a high value in child_mort, and total_fer. 
+     
+# K-means Clustering
+
+K-means clustering is an unsupervised machine learning, which groups the unlabeled dataset into different clusters. The algorithm of K-means is based on centroid, meaning that each cluster has its centroid to represent its cluster. The objective of this algorithm is to minimize the sum of distances between the observation and their appointed cluster. The main task of K-means are : 
+
+- Random initialization: randomly place the $k$ centroid.
+- Cluster assignment: assign each observation to the nearest cluster.
+- Centroid update: shift the centroid to the mean of the formed cluster.
+
+## Handling Outlier
+
+Based on the result from PCA, we have three main outliers in the dataset, which are Singapore, Malta and Luxembourg. In here, we will remove the outlier from the original dataset and assign it as a new object called `world_clean`. 
+
+```{r}
+# Identify outliers and assign as a list called `world_outlier`
+world_outlier <- c("Malta", "Luxembourg", "Singapore")
+
+# Create a dataframe `world_clean` without the outlier 
+world_clean <- world[!(row.names(world) %in% world_outlier),]
+```
+
+## Scaling 
+
+ The normalization of data can be managed by using `scale()`. 
+
+```{r}
+world_clean_scale <- scale(world_clean)
+```
+
+## Optimum "K"
+
+Since the performance of the K-means clustering is influenced by the cluster that it forms, defining the optimum number of clusters becomes a quite big task. Thus, we need to compare several methods to find the appropriate number of cluster and use the majority rule. In this project, we explore three methods of defining the optimum number of clusters "k". 
+
+1. The Elbow Method uses the concept of Within Sum of square (WSS), which define the total variation within a cluster. The elbow method plots the reduction of variance versus several clusters. We can generate the plot by using function `fviz_nbclust()`. The dataset used in this k-means is `world_clean_scale` 
+
+```{r, warning=FALSE}
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+fviz_nbclust(x=world_clean_scale, FUNcluster = kmeans, method="wss")+
+  geom_vline(xintercept = 4, linetype = 2)+
+  labs(subtitle = "Elbow method")
+```
+
+- The method suggests that the location of an elbow in the plot is considered as an indicator of the optimum number of clusters because adding another cluster will not enhance the total within the sum of the square. Thus, the optimum number of clusters based on this method is 4. 
+
+2. [The Silhouette Method](https://uc-r.github.io/kmeans_clustering) computes the silhouette coefficient of each observation that measures how similar a data point is within-cluster compared to other clusters. The method plots average silhouette width versus several clusters k. The optimum k is the one that maximizes the average silhouette. To implement this method, we can use function `fviz_nbclust()`. 
+
+```{r}
+fviz_nbclust(world_clean_scale, kmeans, "silhouette", k.max=10) + 
+  labs(subtitle = "Silhouette method")
+```
+
+- The method suggests that the optimum number of clusters k is at 3 because, at this point, the average silhouette is at the highest value. 
+
+3. [The Gap Statistic](https://uc-r.github.io/kmeans_clustering) is a sophisticated method, which measures how different the total within the intra-cluster variation can be between observed data and reference data with a random uniform distribution. A large value of gap statistic indicates that the clustering is far away from the random uniform distribution of observation. To implement this method, we can use function `fviz_nbclust()`. 
+
+```{r}
+set.seed(100)
+
+fviz_nbclust(world_clean_scale, kmeans,
+  nstart = 25,
+  method = "gap_stat",
+  nboot = 500 # reduce it for lower computation time (but less precise results)
+  ) +
+  labs(subtitle = "Gap Statistic Method")
+```
+
+- The optimum number of the cluster can be defined as the smallest value of k which the gap statistic is within one standard deviation of the gap at k+1. In the above plot, the optimum k is 4, implying this gap value is greater than the gap value of k=5 minus one standard deviation. 
+
+> Insight: Since two methods confirm that the optimum number of clusters k is 4, we will use this number for our k-means clustering. Also, it seems appropriate to have a low number of clusters because our objective is to give a recommendation. Thus, it will be easier to interpret. 
+
+## Implementation K-means 
+
+The K-means clustering can be implemented by using function `kmeans()` and set the centers at 4. Then, we save the cluster result in the original dataframe `world_clean` that will be used for profiling section. 
+
+```{r, warning=FALSE}
+RNGkind(sample.kind = "Rounding")
+set.seed(100)
+
+# Implement K-means
+world_km <- kmeans(x=world_clean_scale, centers=4, nstart = 25)
+
+# Save cluster in dataframe world and change datatype into factor
+world_clean$cluster <- as.factor(world_km$cluster)
+```
+
+## Goodness of Fit
+
+The goodness of fit K-means clustering depends on three values : 
+
+- Within Sum of Squares (`$withinss`): the sum of square distances from each observation to the centroid of each cluster.
+- Between Sum of Squares (`$betweenss`): the sum of the weighted square distances from each centroid to the global mean.
+- Total Sum of Squares (`$totss`): the sum of square distances from each observation to the global mean.
+
+The goodness of fit of K-means can be defined by the lowest value of WSS and a division between BSS and TSS is near 1. Now, we check the goodness of fit of the `world_km `. 
+
+```{r}
+# WSS distance
+world_km$withinss
+
+# BSS/TSS
+world_km$betweenss/world_km$totss
+```
+> Insight: Based on the result, the 4th clusters have the lowest value of WSS, indicating the observation in this cluster might have relatively similar characteristics. The division between BSS and TSS is at 0.518 implies the clusters fairly represent the distribution of the original dataset.  
+
+## Interpretation of Cluster
+
+To visualize the result of K-means clustering, we can use functions `fviz_cluster()`. 
+
+```{r}
+fviz_cluster(world_km, 
+             world_clean_scale, 
+             geom="point",
+             ggtheme = theme_minimal())
+```
+
+The above plot does not have detailed information related to clustering. Thus, it is necessary to create a combined plot between PCA and the result from K-means clustering for obtaining more detailed information. We can use function `PCA()` to implement PCA from dataframe `world_clean`, set `scale.unit = True` ,  and assign as `world_km_pca`. Then, we create a combined plot by using function `fviz_pca_biplot()`.
+
+```{r}
+# Create PCA 
+world_km_pca <- PCA(X=world_clean, 
+                 quali.sup=10, 
+                 scale.unit=T, #Data has not yet scaled
+                 graph=F) 
+
+# Create biplot combine with k-means result
+fviz_pca_biplot(world_km_pca, 
+                habillage=10, #Show clusters on the plot
+                addEllipses = T, 
+                geom.ind="point")
+```
+
+As shown in the biplot plot, there are four groups of countries. Observations in cluster 1 are distributed close to child_mort and total_fer. Observations in cluster 2 are mostly spread close to the variables of health, life expectancy, gdpp, and income. Observations in cluster 3 are mostly spread close to the export and import variables. While the points in cluster 4 are distributed close to the origin [0,0].
+
+The size of each cluster can be seen by using the `world_km$size` function.
+
+```{r}
+world_km$size
+```
+The output shows that each cluster have relatively uniform size of observation. Only 2nd cluster has the lowest number of size. 
+
+For detailed information regarding each cluster characteristic, we group the dataset by its cluster, then calculate the average value for each variable.
+
+```{r, warning=FALSE}
+world_cluster <- world_clean %>%
+  group_by(cluster) %>% 
+  summarise_all(.funs = "mean") 
+```
+
+```{r, echo=FALSE}
+rmarkdown::paged_table(world_cluster)
+```
+Then, we can observe which countries belong to each cluster by creating a map. Note : countries in white color means that they are not in the dataset. 
+
+```{r, echo=FALSE, warning=FALSE}
+
+# Grab the CODE for each Country 
+df <- read.csv('https://raw.githubusercontent.com/plotly/datasets/master/2014_world_gdp_with_codes.csv')
+df <- df %>% 
+  rename(country= COUNTRY) %>% 
+  mutate(country= as.factor(country)) %>% 
+  mutate(country =recode(country, 
+                      'Congo, Democratic Republic of the'="Congo, Dem. Rep.",
+                      'United States'="United States",
+                      'Congo, Republic of the'="Congo, Republic of the"))
+
+world1 <- read.csv("Country-data.csv")
+world1 <- world1 %>% 
+  filter(country!= "Malta") %>% 
+  filter(country != "Singapore") %>% 
+  filter(country != "Luxembourg")
+
+world1$cluster <- world_km$cluster
+world2 <- world1 %>% mutate(cluster=as.numeric(cluster))
+
+# Left join between world2 and df and assign as world4
+world_map <- left_join(df, world2, by="country") %>%  filter(!is.na(cluster))
+
+# light grey boundaries
+l <- list(color = toRGB("white"), width = 0.9)
+
+# specify map projection
+g <- list(
+  showframe = TRUE,
+  showcoastlines = TRUE,
+  projection = list(type = 'Mercator'))
+
+world_map %>% 
+  plot_geo()%>% 
+  add_trace(
+    z = ~cluster, 
+    color = ~cluster,
+    colors = "Spectral",
+    text = ~country, 
+    locations = ~CODE, 
+    marker = list(line = l))%>% 
+    layout(
+    title = list(text='Interactive Map : Clustering', y=0.9, x=0.1, face="bold"),
+    font = list(family = "Arial Narrow", size = 15, color = "black"),
+    geo = g) %>% 
+    colorbar(title = "Cluster") 
+```
+
+> **Cluster I**: Mostly countries with negative values, such as  
+high child mortality, low income, high inflation rate, low life expectancy, high population rate, and low gdp. Most of the countries are located in Africa and some parts of Asia regions.
+>
+> **Cluster II**: This cluster is characterised by positive values such as low child mortality, high total health spending per capita, high income, low inflation rate, high life expectancy, low population rate and high gdp. As expected, countries that belong to the 2nd cluster are mostly located in some parts of Europe, Australia, North America and a couple of parts of Asia regions.
+>
+> **Cluster III**: This cluster consists of countries with high values of imports and exports. Countries that belong to this cluster are located in the East part of Europe, some parts of South East Asia and Africa.  
+>
+> **Cluster IV**: This cluster consists of countries with moderate values for each variable. Based on the variables factor map and cluster plot, this cluster is located near the origin point [0,0], thus the value of each variable is relatively similar to the mean of the variable. Countries that belong to this cluster are located in South America, some parts of Africa and Asia.
+
+## Recommendation 
+
+Based on the explanation of characteristics of each cluster, we can conclude that the HELP organization should priorities their resources to be utilized for countries listed in cluster I. Based on the PCA result, this cluster is highly correlated with variable child mortality. Thus, we can sort based on this value to obtain a list of countries that need aid. The below table shows that Haiti is the most country that needs aid, followed by Sierra Leone and Chad.  
+
+```{r}
+cluster_one <- world_clean %>% 
+  filter(cluster==1) %>% 
+  arrange(-child_mort) %>% 
+  head(10)
+```
+
+```{r, echo=FALSE}
+rmarkdown::paged_table(cluster_one)
+```
+ 
+# Conclusion 
+
+- The dimension reduction is performed in this dataset by using PCA. We choose 5 PCs to represent the original dataset. With these PCs, we reduce approximately 45% of the dimension from the original dataset while retaining almost 95% of the information. The result from PCA can be utilized for machine learning applications.  
+- The optimum number of clusters is obtained by using Elbow, Silhouette and Gap Statistic. The majority rule suggests that the optimum k is 4 (four). 
+- The goodness of fit suggests that the clusters fairly represent the distribution of the original dataset. 
+- Cluster I contains countries which associated with high level of child mortality and population growth. This makes cluster 1 as a priority cluster to get assistance from the HELP organization. Furthermore, based on the value of child mortality, Haiti can be categorized as the country with the most in need of financial aid. 
+
+# Reference
+
+1. [HELP Organization](https://help-international.org) 
+2. [PCA](https://www.sartorius.com/en/knowledge/science-snippets/what-is-principal-component-analysis-pca-and-how-it-is-used-507186)
+3. [Biplot](https://www.geo.fu-berlin.de/en/v/soga/Geodata-analysis/Principal-Component-Analysis/principal-components-basics/Interpretation-and-visualization/index.html)
+4. [Kaggle website](https://www.kaggle.com/rohan0301/unsupervised-learning-on-country-data?select=data-dictionary.csv)
+5. [Gap Statistic](https://www.researchgate.net/post/How-to-interpret-the-output-of-Gap-Statistics-method-for-clustering)
+6. [Silhouette Method](https://uc-r.github.io/kmeans_clustering)
+
+
+
+
